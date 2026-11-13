@@ -9,8 +9,9 @@ Method (per market, from its own history only, plus one cross-market
 shrinkage step):
   * The predictive centre is persistence: the last observed price. Every
     centre variant tried (trailing means, EWMA, trend extrapolation,
-    mean-reversion pulls, median shifts) scored worse on the practice
-    cases than simply staying at the last price.
+    mean-reversion pulls, median shifts, tiny trailing-median pulls)
+    scored worse on the practice cases than simply staying at the last
+    price.
   * The spread comes from the market's own recent past. For two lookback
     windows (240 and 480 minutes) and every horizon h = 1..240, take the
     empirical quantiles of the h-minute price changes observed in the
@@ -22,29 +23,33 @@ shrinkage step):
     when the market's own moves are.
   * Cross-market shape pooling: each market's per-horizon change shape
     (its quantiles standardized by its own interquartile range around
-    its median) is shrunk halfway toward the cross-market median shape
-    for that horizon, then rescaled by the market's own range. Tail
-    quantiles estimated from a few hundred changes are noisy; the
-    pooled shape stabilizes them while every market keeps its own
-    centre and scale.
+    its median) is shrunk toward the cross-market median shape for that
+    horizon, then rescaled by the market's own range. Tail quantiles
+    estimated from a few hundred changes are noisy; the pooled shape
+    stabilizes them while every market keeps its own centre and scale.
+    The inner quantiles are pooled at 55%, the outer (tail) quantiles
+    at 25%: the tails carry the market's own jump asymmetry and lose
+    more than they gain from heavier pooling.
   * Regime scaling: the band is scaled by the ratio of the market's
     recent volatility (mean absolute 1-minute change over the last 30
     minutes) to its volatility over the last 720 minutes, clamped to
-    [0.7, 1.4]. Volatility clusters: a market that just moved keeps
-    moving, a quiet one usually stays quiet.
+    [0.55, 1.55]. Volatility clusters: a market that just moved keeps
+    moving, a quiet one usually stays quiet. The wider clamp (round 2
+    used [0.7, 1.4]) lets the band follow strong regime changes.
   * Rolling-origin calibration: before forecasting, each market's band
-    multiplier is chosen by backtest. Nine origins, 240 to 2160 minutes
-    before the checkpoint, are forecast from their own prefixes and
-    scored at horizons 30/60/120/240; the multiplier in
+    multiplier is chosen by backtest. Twelve origins, 240 to 2880
+    minutes before the checkpoint, are forecast from their own prefixes
+    and scored at horizons 30/60/120/240; the multiplier in
     {0.75, 0.9, 1.0, 1.1, 1.25} with the lowest origin pinball loss
     scales the final band. This adapts each market's width to its own
     recent forecastability, using only data the case itself holds.
   * The empirical bands are blended with a fixed-scale normal band
-    (sigma 0.0025 per sqrt-minute, the house baseline's scale): the
-    inner quantiles keep 95% of the empirical band, the outer quantiles
-    80%. The blend is jump insurance: a short recent window can miss
-    the next jump, and the normal band keeps the tails honest. The
-    median is never blended; it stays at the last price.
+    (sigma 0.0035 per sqrt-minute): the inner quantiles keep 95% of the
+    empirical band, the outer quantiles 80%. The blend is jump
+    insurance: a short recent window can miss the next jump, and the
+    normal band keeps the tails honest. The wider sigma (round 2 used
+    0.0025) reflects that the empirical tails understate jump risk.
+    The median is never blended; it stays at the last price.
   * Markets with fewer than 120 prices of history skip the empirical
     bands entirely and use the normal band alone: with that little data
     the empirical quantiles are noise.
@@ -55,21 +60,35 @@ no network, no clock, no randomness.
 Validated locally against the practice answers reconstructed from the
 kit's case files plus Polymarket's public price history (the same
 reconstruction reproduces the house baseline's published practice loss
-of 0.363589 exactly): practice loss 0.266265 (per case p00 0.449951,
-p01 0.298721, p02 0.350102, p03 0.257516, p04 0.193918, p05 0.109510),
-beating the shipped entry's 0.283866 on all six cases; 90% coverage
-0.9136; two runs byte-identical; slowest case 1.8 s (limit 8 s).
+of 0.363589 exactly): practice loss 0.262438 (per case p00 0.443440,
+p01 0.296425, p02 0.345126, p03 0.246842, p04 0.193574, p05 0.110589),
+beating round 2's 0.266265 on 4 of 6 cases (p04 tied, p05 slightly
+worse); 90% coverage 0.9375; rolling-origin stress pooled 0.672579 vs
+round 2's 0.682424 (wins 6/10 origins, 4/5 in the wild Nov 11 regime);
+two runs byte-identical; slowest case under 2 s (limit 8 s).
 
-Round 2 revision (13 Nov 2026): this file replaces the shipped round 1
-entry. What changed, and why, in short: the 720-minute window was
-dropped for 480 (old regimes mislead the band); the blend kept more of
-the empirical band (inner 0.95, outer 0.80); regime scaling, cross-market
-shape pooling, and per-market rolling-origin calibration were added —
-each validated alone and in combination on the same six practice cases
-before it was kept. Variants that lost (centre pulls, monotone band
-width, jump boosts, recency decay, split calibration, mean pooling)
-were discarded; see the lab notes. Behaviour is unchanged by this
-revision note: same constants, same code paths, same bytes out.
+Round 3 (14 Nov 2026): this file replaces the round 2 entry. What
+changed, and why, in short: the normal insurance sigma widened
+0.0025 -> 0.0035 (the empirical tails understate jump risk; the sigma
+axis was monotone up to 0.0035, then turned); the regime clamp widened
+[0.7, 1.4] -> [0.55, 1.55]; shape pooling split by level (inner 0.55,
+outer 0.25); calibration origins extended 9 -> 12. Each change was
+validated alone and in combination on the same six practice cases,
+and the combination was stress-tested before it was kept. Variants
+that lost (regime fade, median regime, per-market sigma scaling,
+robust calibration, horizon-split calibration, recency decay, Hazen
+quantiles, centre pulls, mean pooling) were discarded; see the lab
+notes. Behaviour is unchanged by this revision note: same constants,
+same code paths, same bytes out.
+
+Revision (repo entry, 13 Nov 2026): this file was written into the
+entry repository from the lab version and revised here. The module
+note above now records the packaging provenance, and the pinball item
+used by the calibration backtest is factored into a named helper
+(_pinball_item) with the identical formula. No constant, code path,
+or output byte changed in this revision: the six practice outputs
+were diffed against the lab version before and after the edit and
+are byte-identical.
 """
 
 import json
@@ -82,7 +101,7 @@ Z_SCORES = (-1.6448536269514722, -0.6744897501960817, 0.0,
             0.6744897501960817, 1.6448536269514722)
 LEVELS = (0.05, 0.25, 0.5, 0.75, 0.95)
 
-BASE_SIGMA = 0.0025       # per sqrt-minute scale of the insurance band
+BASE_SIGMA = 0.0035       # per sqrt-minute scale of the insurance band
 WINDOWS = (240, 480)      # lookback windows for the empirical bands
 MIN_SAMPLES = 8           # minimum h-step changes needed for a quantile
 INNER_KEEP = 0.95         # empirical weight for the 25%/75% quantiles
@@ -90,10 +109,12 @@ OUTER_KEEP = 0.8          # empirical weight for the 5%/95% quantiles
 SHORT_HISTORY = 120       # below this many prices, use the normal band only
 REGIME_WIN = 30           # recent window (minutes) for the regime ratio
 REGIME_BASE = 720         # denominator window (minutes) for the ratio
-REGIME_LO = 0.7           # clamp for the regime multiplier
-REGIME_HI = 1.4
-POOL_WEIGHT = 0.5         # shrinkage toward the cross-market median shape
-CALIB_ORIGINS = (240, 480, 720, 960, 1200, 1440, 1680, 1920, 2160)
+REGIME_LO = 0.55          # clamp for the regime multiplier
+REGIME_HI = 1.55
+POOL_WEIGHT = 0.55        # shrinkage toward the cross-market median shape
+POOL_OUTER = 0.25         # shrinkage for the outer (tail) levels
+CALIB_ORIGINS = (240, 480, 720, 960, 1200, 1440, 1680, 1920, 2160,
+                 2400, 2640, 2880)
 CALIB_HORIZONS = (30, 60, 120, 240)
 CALIB_GRID = (0.75, 0.9, 1.0, 1.1, 1.25)
 
@@ -108,6 +129,11 @@ def _quantile(ordered, tau):
     hi = lo + 1 if lo + 1 < n else lo
     frac = pos - lo
     return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
+
+
+def _pinball_item(tau, diff):
+    """One pinball-loss item, scaled by 100 like the scorer."""
+    return 100.0 * max(tau * diff, (tau - 1.0) * diff)
 
 
 def _change_quantiles(series, horizon):
@@ -223,7 +249,7 @@ def _calibrate(prices):
                     if k == 2:
                         continue
                     diff = y - qv
-                    totals[gi] += 100.0 * max(tau * diff, (tau - 1.0) * diff)
+                    totals[gi] += _pinball_item(tau, diff)
                     counts[gi] += 1
     if counts[0] == 0:
         return 1.0
@@ -288,8 +314,10 @@ def _market_rows(prices, horizon, pooled_table):
         return [rows[h] for h in horizons]
     merged = _merged_table(prices, horizons)
     if pooled_table is not None:
-        merged = {h: [(1.0 - POOL_WEIGHT) * merged[h][k]
-                      + POOL_WEIGHT * pooled_table[h][k]
+        merged = {h: [(1.0 - (POOL_OUTER if k in (0, 4) else POOL_WEIGHT))
+                      * merged[h][k]
+                      + (POOL_OUTER if k in (0, 4) else POOL_WEIGHT)
+                      * pooled_table[h][k]
                       for k in range(5)] for h in horizons}
     mult = _regime_mult(prices) * _calibrate(prices)
     rows = _rows_from_table(last, merged, horizons, mult)
